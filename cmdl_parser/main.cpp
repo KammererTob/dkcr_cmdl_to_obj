@@ -160,20 +160,20 @@ void main(int argc, char* argv[])
 	inputFile.ignore(32 - (headerSize % 32)); // Pad this shit...
 
 	// For Debug Purposes
-	std::streamoff curFp = inputFile.tellg();
-	for (unsigned int i = 0; i < fileHeader.sectionCount; i++) {
-		std::stringstream fileName;
-		fileName << "Section" << i << ".sec";
-		std::ofstream debugFiles(fileName.str());
+	//std::streamoff curFp = inputFile.tellg();
+	//for (unsigned int i = 0; i < fileHeader.sectionCount; i++) {
+	//	std::stringstream fileName;
+	//	fileName << "Section" << i << ".sec";
+	//	std::ofstream debugFiles(fileName.str());
 
-		char* fileBuffer = new char[fileHeader.sectionSizes[i]];
-		inputFile.read(fileBuffer, fileHeader.sectionSizes[i]);
-		debugFiles.write(fileBuffer, fileHeader.sectionSizes[i]);
+	//	char* fileBuffer = new char[fileHeader.sectionSizes[i]];
+	//	inputFile.read(fileBuffer, fileHeader.sectionSizes[i]);
+	//	debugFiles.write(fileBuffer, fileHeader.sectionSizes[i]);
 
-		debugFiles.close();
-		delete fileBuffer;
-	}
-	inputFile.seekg(curFp, inputFile.beg);
+	//	debugFiles.close();
+	//	delete fileBuffer;
+	//}
+	//inputFile.seekg(curFp, inputFile.beg);
 
 	// Read Materials for now..
 	uint32_t sizeRemainder = fileHeader.sectionSizes[0] - 4;
@@ -216,9 +216,12 @@ void main(int argc, char* argv[])
 			toWORD(x);
 			toWORD(y);
 			toWORD(z);
-			vertexPos.x = (float)x / 0x2000;
-			vertexPos.y = (float)y / 0x2000;
-			vertexPos.z = (float)z / 0x2000;
+			vertexPos.x = (float)x / 0x8000;
+			if (vertexPos.x >= 1.0) vertexPos.x = -2.0 + vertexPos.x;
+			vertexPos.y = (float)y / 0x8000;
+			if (vertexPos.y >= 1.0) vertexPos.y = -2.0 + vertexPos.y;
+			vertexPos.z = (float)z / 0x8000;
+			if (vertexPos.z >= 1.0) vertexPos.z = -2.0 + vertexPos.z;
 		}
 		else {
 			inputFile.read(reinterpret_cast<char *>(&vertexPos.x), sizeof(vertexPos.x));
@@ -289,6 +292,7 @@ void main(int argc, char* argv[])
 	inputFile.ignore(fileHeader.sectionSizes[6]);
 
 	// Get all Submeshes..
+	int stripCnt = 0, fanCnt = 0, trianglesCnt = 0;
 	for (unsigned int i = 7; i < fileHeader.sectionSizes.size(); i++) {
 		bool hasNrm = false;
 		int bytesRead = 0;
@@ -383,6 +387,7 @@ void main(int argc, char* argv[])
 
 			switch (primitveFlag & 0xF8) {
 			case 0x90: // Triangles
+				trianglesCnt++;
 				for (unsigned int x = 0; x < (primitiveObjectCount / 3); x++) {
 					outFile << "f ";
 					for (unsigned y = 0; y < 3; y++) {
@@ -416,6 +421,7 @@ void main(int argc, char* argv[])
 				}
 				break;
 			case 0x98: // Triangle Strip
+				stripCnt++;
 				for (unsigned x = 0; x < primitiveObjectCount; x++) {
 					inputFile.ignore(bytesToSkip);
 					bytesRead += bytesToSkip;
@@ -447,14 +453,24 @@ void main(int argc, char* argv[])
 
 				for (unsigned x = 2; x < curVertices.size(); x++) {
 					// We do we do this?
-					outFile << "f ";
-					outFile << curVertices[x - 2] + 1 << "/" << (numUVs >= 1 ? std::to_string(curUvs[x - 2] + 1) : "") << "/" << (hasNrm ? std::to_string(curNormals[x - 2] + 1) : "") << " ";
-					outFile << curVertices[x - 1] + 1 << "/" << (numUVs >= 1 ? std::to_string(curUvs[x - 1] + 1) : "") << "/" << (hasNrm ? std::to_string(curNormals[x - 1] + 1) : "") << " ";
-					outFile << curVertices[x] + 1 << "/" << (numUVs >= 1 ? std::to_string(curUvs[x] + 1) : "") << "/" << (hasNrm ? std::to_string(curNormals[x] + 1) : "") << " ";
-					outFile << std::endl;
+					if (x % 2 == 0) {
+						outFile << "f ";
+						outFile << curVertices[x ] + 1 << "/" << (numUVs >= 1 ? std::to_string(curUvs[x] + 1) : "") << "/" << (hasNrm ? std::to_string(curNormals[x] + 1) : "") << " ";
+						outFile << curVertices[x - 1] + 1 << "/" << (numUVs >= 1 ? std::to_string(curUvs[x - 1] + 1) : "") << "/" << (hasNrm ? std::to_string(curNormals[x - 1] + 1) : "") << " ";
+						outFile << curVertices[x - 2] + 1 << "/" << (numUVs >= 1 ? std::to_string(curUvs[x - 2] + 1) : "") << "/" << (hasNrm ? std::to_string(curNormals[x - 2] + 1) : "") << " ";
+						outFile << std::endl;
+					}
+					else {
+						outFile << "f ";
+						outFile << curVertices[x - 2] + 1 << "/" << (numUVs >= 1 ? std::to_string(curUvs[x - 2] + 1) : "") << "/" << (hasNrm ? std::to_string(curNormals[x - 2] + 1) : "") << " ";
+						outFile << curVertices[x - 1] + 1 << "/" << (numUVs >= 1 ? std::to_string(curUvs[x - 1] + 1) : "") << "/" << (hasNrm ? std::to_string(curNormals[x - 1] + 1) : "") << " ";
+						outFile << curVertices[x] + 1 << "/" << (numUVs >= 1 ? std::to_string(curUvs[x] + 1) : "") << "/" << (hasNrm ? std::to_string(curNormals[x] + 1) : "") << " ";
+						outFile << std::endl;
+					}
 				}
 				break;
 			case 0xA0: // Triangle Fan
+				fanCnt++;
 				// First we try it fucking primitive :P
 				inputFile.ignore(bytesToSkip);
 				bytesRead += bytesToSkip;
@@ -528,6 +544,9 @@ void main(int argc, char* argv[])
 		inputFile.ignore(fileHeader.sectionSizes[i] - bytesRead); // We need to ignore the rest of the section because they are 32 byte aligned...
 	}
 
+	std::cout << "Triangles: " << trianglesCnt << std::endl;
+	std::cout << "Fans: " << fanCnt << std::endl;
+	std::cout << "Strips: " << stripCnt << std::endl;
 
 	// Change Byte Order!
 	fileHeader.boundingBox[0].x = FloatSwap(fileHeader.boundingBox[0].x);
@@ -537,10 +556,10 @@ void main(int argc, char* argv[])
 	fileHeader.boundingBox[1].y = FloatSwap(fileHeader.boundingBox[1].y);
 	fileHeader.boundingBox[1].z = FloatSwap(fileHeader.boundingBox[1].z);
 
-	std::cout << "Done!" << std::endl;
 	std::cout << "Min Bounding Box: " << "x: " << fileHeader.boundingBox[0].x << '\t' << "y: " << fileHeader.boundingBox[0].y << '\t' << "z: " << fileHeader.boundingBox[0].z << std::endl;
 	std::cout << "Max Bounding Box: " << "x: " << fileHeader.boundingBox[1].x << '\t' << "y: " << fileHeader.boundingBox[1].y << '\t' << "z: " << fileHeader.boundingBox[1].z << std::endl;
 
+	std::cout << "Done!" << std::endl;
 	inputFile.close();
 	exit(0);
 }
