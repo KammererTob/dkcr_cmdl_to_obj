@@ -547,7 +547,7 @@ void main(int argc, char* argv[])
 
 				for (unsigned x = 2; x < curVertices.size(); x++) {
 					// We do we do this?
-					if (x % 2 == 0) {
+					if (x % 2 != 0) {
 						outFile << "f ";
 						outFile << curVertices[x] + 1 << "/" << (numUVs >= 1 ? std::to_string(curUvs[x] + 1) : "") << "/" << (hasNrm ? std::to_string(curNormals[x] + 1) : "") << " ";
 						outFile << curVertices[x - 1] + 1 << "/" << (numUVs >= 1 ? std::to_string(curUvs[x - 1] + 1) : "") << "/" << (hasNrm ? std::to_string(curNormals[x - 1] + 1) : "") << " ";
