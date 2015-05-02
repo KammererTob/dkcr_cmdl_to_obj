@@ -1,9 +1,10 @@
-#include <iostream>
-#include <fstream>
 #include <vector>
 #include <stdint.h>
 #include <iomanip>
-#include <sstream>
+#include <intrin.h>
+#include <memory>
+
+#include "Material.h"
 
 struct float3 {
 	float x;
@@ -89,7 +90,7 @@ void main(int argc, char* argv[])
 
 	if (inputFile.fail()) {
 		strerror_s(errBuff, 100, errno);
-		std::cout << "Failed to open input file (ErrorCode: " << errBuff  << ")" << std::endl;
+		std::cout << "Failed to open input file (ErrorCode: " << errBuff << ")" << std::endl;
 		exit(0);
 	}
 	uint32_t toWaste;
@@ -160,46 +161,127 @@ void main(int argc, char* argv[])
 	inputFile.ignore(32 - (headerSize % 32)); // Pad this shit...
 
 	// For Debug Purposes
-	//std::streamoff curFp = inputFile.tellg();
-	//for (unsigned int i = 0; i < fileHeader.sectionCount; i++) {
-	//	std::stringstream fileName;
-	//	fileName << "Section" << i << ".sec";
-	//	std::ofstream debugFiles(fileName.str());
+	std::streamoff curFp = inputFile.tellg();
+	for (unsigned int i = 0; i < 1; i++) { //fileHeader.sectionCount
+		std::stringstream fileName;
+		fileName << "Section" << i << ".sec";
+		std::ofstream debugFiles(fileName.str());
 
-	//	char* fileBuffer = new char[fileHeader.sectionSizes[i]];
-	//	inputFile.read(fileBuffer, fileHeader.sectionSizes[i]);
-	//	debugFiles.write(fileBuffer, fileHeader.sectionSizes[i]);
+		char* fileBuffer = new char[fileHeader.sectionSizes[i]];
+		inputFile.read(fileBuffer, fileHeader.sectionSizes[i]);
+		debugFiles.write(fileBuffer, fileHeader.sectionSizes[i]);
 
-	//	debugFiles.close();
-	//	delete fileBuffer;
-	//}
-	//inputFile.seekg(curFp, inputFile.beg);
+		debugFiles.close();
+		delete fileBuffer;
+	}
+	inputFile.seekg(curFp, inputFile.beg);
 
-	// Read Materials for now..
-	uint32_t sizeRemainder = fileHeader.sectionSizes[0] - 4;
+	// Materials
+	uint32_t sizeRemainder = fileHeader.sectionSizes[0];
 
 	uint32_t materialCount;
 	inputFile.read(reinterpret_cast<char *>(&materialCount), sizeof(materialCount));
 	toDWORD(materialCount);
 
-	std::vector<uint32_t> vertexAttributesFlags;
+	sizeRemainder -= 4;
+
+	std::ofstream materialFile("test.mtl");
+
+	std::vector<std::unique_ptr<Material>> materials;
 	for (unsigned int i = 0; i < materialCount; i++) {
-		uint32_t mFlags, mSize;
+		uint32_t mSize, mFlags;
+		uint32_t curSectionSize = 0;
+
 		inputFile.read(reinterpret_cast<char *>(&mSize), sizeof(mSize));
 		toDWORD(mSize);
+
 		sizeRemainder -= (mSize + 4);
+
 		inputFile.ignore(12);
+		curSectionSize += 12;
+
 		inputFile.read(reinterpret_cast<char *>(&mFlags), sizeof(mFlags));
 		toDWORD(mFlags);
 		std::cout << "Flag" << i << ": " << std::hex << mFlags << std::dec << std::endl;
-		vertexAttributesFlags.push_back(mFlags);
-		inputFile.ignore(mSize - 16);	 // -20 because -4 + -12 (we ignored) + -4 for the flags
+		curSectionSize += 4;
+
+		inputFile.ignore(12);
+		curSectionSize += 12;
+
+		std::stringstream matName;
+		matName << "mat" << i;
+		std::unique_ptr<Material> matPtr(new Material(matName.str()));
+
+		while (curSectionSize < (mSize-4)) { // -4 because we ignore the END
+			uint32_t mSectionType;
+
+			inputFile.read(reinterpret_cast<char *>(&mSectionType), sizeof(mSectionType));
+			toDWORD(mSectionType);
+			curSectionSize += 4;
+
+			matPtr->setVertexAttributeFlags(mFlags);
+
+			switch (mSectionType) {
+			case 0x50415353: // PASS Just extract the texture and move on!
+			{
+				uint32_t sectionSize;
+				inputFile.read(reinterpret_cast<char *>(&sectionSize), sizeof(sectionSize));
+				sectionSize = _byteswap_ulong(sectionSize);
+
+				char* sectionBuffer = new char[sectionSize];
+				inputFile.read(sectionBuffer, sectionSize);
+
+				matPtr->addMaterialSection<Pass>(*matPtr.get(), sectionBuffer, sectionSize);
+
+				delete sectionBuffer;
+				curSectionSize += (sectionSize + 4);
+				//inputFile.ignore(sectionSize - 16); // -16 because 8 we skipped and 8 for the texture id...
+			}
+			break;
+			case 0x434C5220: // CLR - need to be verified
+			{
+				inputFile.ignore(4); // We ignore the subtype because it is not relevant at the moment...
+
+				// Extract the rgba value
+				uint32_t rgba;
+				inputFile.read(reinterpret_cast<char *>(&rgba), sizeof(rgba));
+				rgba = _byteswap_ulong(rgba);
+
+				curSectionSize += 8;
+			}
+			break;
+			case 0x494E5420: // INT - need to be verified
+			{
+				inputFile.ignore(4); // We ignore the subtype because it is not relevant at the moment...
+
+				// Extract the rgba value
+				uint32_t rgba;
+				inputFile.read(reinterpret_cast<char *>(&rgba), sizeof(rgba));
+				rgba = _byteswap_ulong(rgba);
+
+				curSectionSize += 8;
+			}
+			break;
+			default:
+				std::cout << "Unknown section type " << reinterpret_cast<char*>(mSectionType) << std::endl;
+				exit(-1);
+				break;
+			}
+		}
+
+		mSize = mSize - curSectionSize;
+		if (mSize < 0) mSize = 0;
+
+		materialFile << matPtr->getMaterialDefinition();
+		materials.push_back(std::move(matPtr));
+		inputFile.ignore(mSize);	 // -20 because -4 + -12 (we ignored) + -4 for the flags + -8 for the ID
 	}
 	inputFile.ignore(sizeRemainder);
-
+	materialFile.close();
 
 	std::ofstream outFile("check.obj");
 	outFile << "#" << std::endl << "#" << std::endl;
+	outFile << "mtllib test.mtl" << std::endl;
 	// Get the Vertex coordinates.
 	std::vector<float3> positions;
 	uint32_t numVerts = fileHeader.sectionSizes[1] / 12; // 12 (3 float a 4 bytes) per Vertex
@@ -217,11 +299,11 @@ void main(int argc, char* argv[])
 			toWORD(y);
 			toWORD(z);
 			vertexPos.x = (float)x / 0x8000;
-			if (vertexPos.x >= 1.0) vertexPos.x = -2.0 + vertexPos.x;
+			if (vertexPos.x >= 1.0) vertexPos.x = -2.0f + vertexPos.x;
 			vertexPos.y = (float)y / 0x8000;
-			if (vertexPos.y >= 1.0) vertexPos.y = -2.0 + vertexPos.y;
+			if (vertexPos.y >= 1.0) vertexPos.y = -2.0f + vertexPos.y;
 			vertexPos.z = (float)z / 0x8000;
-			if (vertexPos.z >= 1.0) vertexPos.z = -2.0 + vertexPos.z;
+			if (vertexPos.z >= 1.0) vertexPos.z = -2.0f + vertexPos.z;
 		}
 		else {
 			inputFile.read(reinterpret_cast<char *>(&vertexPos.x), sizeof(vertexPos.x));
@@ -245,16 +327,20 @@ void main(int argc, char* argv[])
 	uint32_t numNormals = fileHeader.sectionSizes[2] / 6; // 6 (3 short a 2 bytes) per Vertex
 	for (unsigned int i = 0; i < numNormals; i++) {
 		float3 normal;
-		uint16_t x, y, z;
+		short x, y, z;
 		inputFile.read(reinterpret_cast<char *>(&x), sizeof(x));
 		inputFile.read(reinterpret_cast<char *>(&y), sizeof(y));
 		inputFile.read(reinterpret_cast<char *>(&z), sizeof(z));
-		toWORD(x);
-		toWORD(y);
-		toWORD(z);
-		normal.x = (float)x / 0x8000;
-		normal.y = (float)y / 0x8000;
-		normal.z = (float)z / 0x8000;
+		x = _byteswap_ushort(x);
+		y = _byteswap_ushort(y);
+		z = _byteswap_ushort(z);
+		//toWORD(x);
+		//toWORD(y);
+		//toWORD(z);
+		normal.x = x / (float)0x4000;
+		normal.y = y / (float)0x4000;
+		normal.z = z / (float)0x4000;
+
 		outFile << "vn " << normal.x << " " << normal.y << " " << normal.z << std::endl;
 	}
 	if (numNormals > 0) {
@@ -278,8 +364,13 @@ void main(int argc, char* argv[])
 		toWORD(u);
 		toWORD(v);
 		uv.u = (float)u / 0x2000;
+		//if (uv.u >= 1.0)  uv.u = -2.0 + uv.u;
 		uv.v = (float)v / 0x2000;
-		outFile << "vt " << uv.u << " " << uv.v <<  std::endl;
+		//if (uv.v >= 1.0)  uv.v = -2.0 + uv.v;
+
+		uv.v = -uv.v;
+
+		outFile << "vt " << uv.u << " " << uv.v << std::endl;
 	}
 	if (numUvs > 0) {
 		inputFile.ignore(fileHeader.sectionSizes[5] % numUvs);
@@ -305,7 +396,7 @@ void main(int argc, char* argv[])
 		bytesRead += 2;
 		toWORD(matID);
 
-		if ((vertexAttributesFlags[matID] & 0x3) != 0x3) {
+		if ((materials[matID]->getVertexAttributeFlags() & 0x3) != 0x3) {
 			std::cout << "FATAAAAAAL" << std::endl;
 			exit(-1);
 		}
@@ -315,12 +406,15 @@ void main(int argc, char* argv[])
 		toWORD(unknownFlag);
 		bytesRead += 4;
 
+		// Set the material file and write it.
+		outFile << "usemtl " << materials[matID]->getMaterialName() << std::endl;
+		outFile << "s off" << std::endl;
 
-		if ((vertexAttributesFlags[matID] & 0xFF000000) == 0x1000000) bytesToSkip = 1;	// Don't know if this is completely true yet, but this happens from time to time...
-		if ((vertexAttributesFlags[matID] & 0xFF000000) == 0x3000000) bytesToSkip = 2; 
-		if ((vertexAttributesFlags[matID] & 0xC) == 0xC) hasNrm = true;
+		if ((materials[matID]->getVertexAttributeFlags() & 0xFF000000) == 0x1000000) bytesToSkip = 1;	// Don't know if this is completely true yet, but this happens from time to time...
+		if ((materials[matID]->getVertexAttributeFlags() & 0xFF000000) == 0x3000000) bytesToSkip = 2;
+		if ((materials[matID]->getVertexAttributeFlags() & 0xC) == 0xC) hasNrm = true;
 
-		switch (vertexAttributesFlags[matID] & 0xF0) {
+		switch (materials[matID]->getVertexAttributeFlags() & 0xF0) {
 		case 0x0:
 			numColors = 0;
 			break;
@@ -335,32 +429,32 @@ void main(int argc, char* argv[])
 			break;
 		}
 
-		switch (vertexAttributesFlags[matID] & 0x3FFF00) {
-		case 0x0: 
+		switch (materials[matID]->getVertexAttributeFlags() & 0x3FFF00) {
+		case 0x0:
 			numUVs = 0;
 			break;
 		case 0x300:
 			numUVs = 1;
 			break;
-		case 0xF00: 
+		case 0xF00:
 			numUVs = 2;
 			break;
-		case 0x3F00: 
+		case 0x3F00:
 			numUVs = 3;
 			break;
-		case 0xFF00: 
+		case 0xFF00:
 			numUVs = 4;
 			break;
-		case 0x3FF00: 
+		case 0x3FF00:
 			numUVs = 5;
 			break;
-		case 0xFFF00: 
+		case 0xFFF00:
 			numUVs = 6;
 			break;
-		case 0x3FFF00: 
+		case 0x3FFF00:
 			numUVs = 7;
 			break;
-		default: 
+		default:
 			numUVs = 2;
 			break;
 		}
@@ -388,7 +482,7 @@ void main(int argc, char* argv[])
 			switch (primitveFlag & 0xF8) {
 			case 0x90: // Triangles
 				trianglesCnt++;
-				for (unsigned int x = 0; x < (primitiveObjectCount / 3); x++) {
+				for (int x = 0; x < (primitiveObjectCount / 3); x++) {
 					outFile << "f ";
 					for (unsigned y = 0; y < 3; y++) {
 
@@ -415,7 +509,7 @@ void main(int argc, char* argv[])
 							toWORD(indexUV);
 						}
 
-						outFile << indexPosition+1 << "/" << (numUVs >= 1 ? std::to_string(indexUV+1) : "") << "/" << (hasNrm ? std::to_string(indexNormal+1) : "") << " ";
+						outFile << indexPosition + 1 << "/" << (numUVs >= 1 ? std::to_string(indexUV + 1) : "") << "/" << (hasNrm ? std::to_string(indexNormal + 1) : "") << " ";
 					}
 					outFile << std::endl;
 				}
@@ -455,7 +549,7 @@ void main(int argc, char* argv[])
 					// We do we do this?
 					if (x % 2 == 0) {
 						outFile << "f ";
-						outFile << curVertices[x ] + 1 << "/" << (numUVs >= 1 ? std::to_string(curUvs[x] + 1) : "") << "/" << (hasNrm ? std::to_string(curNormals[x] + 1) : "") << " ";
+						outFile << curVertices[x] + 1 << "/" << (numUVs >= 1 ? std::to_string(curUvs[x] + 1) : "") << "/" << (hasNrm ? std::to_string(curNormals[x] + 1) : "") << " ";
 						outFile << curVertices[x - 1] + 1 << "/" << (numUVs >= 1 ? std::to_string(curUvs[x - 1] + 1) : "") << "/" << (hasNrm ? std::to_string(curNormals[x - 1] + 1) : "") << " ";
 						outFile << curVertices[x - 2] + 1 << "/" << (numUVs >= 1 ? std::to_string(curUvs[x - 2] + 1) : "") << "/" << (hasNrm ? std::to_string(curNormals[x - 2] + 1) : "") << " ";
 						outFile << std::endl;
@@ -471,7 +565,7 @@ void main(int argc, char* argv[])
 				break;
 			case 0xA0: // Triangle Fan
 				fanCnt++;
-				// First we try it fucking primitive :P
+	
 				inputFile.ignore(bytesToSkip);
 				bytesRead += bytesToSkip;
 
@@ -537,27 +631,28 @@ void main(int argc, char* argv[])
 				std::cout << "Warning: Encountered unknown primitive Flag (" << std::to_string(primitveFlag) << ") in Section: " << i << " at global offset " << std::hex << inputFile.tellg() << std::dec << std::endl;
 				inputFile.seekg(-3, inputFile.cur); // Set the file pointer 3 bytes (flags and count) back to we don't get a corrupted header if this was the next section
 				bytesRead -= 3;
-				primitveFlag = 0;			
+				primitveFlag = 0;
 				break;
 			}
 		}
 		inputFile.ignore(fileHeader.sectionSizes[i] - bytesRead); // We need to ignore the rest of the section because they are 32 byte aligned...
 	}
+	outFile.close();
 
 	std::cout << "Triangles: " << trianglesCnt << std::endl;
 	std::cout << "Fans: " << fanCnt << std::endl;
 	std::cout << "Strips: " << stripCnt << std::endl;
 
 	// Change Byte Order!
-	fileHeader.boundingBox[0].x = FloatSwap(fileHeader.boundingBox[0].x);
-	fileHeader.boundingBox[0].y = FloatSwap(fileHeader.boundingBox[0].y);
-	fileHeader.boundingBox[0].z = FloatSwap(fileHeader.boundingBox[0].z);
-	fileHeader.boundingBox[1].x = FloatSwap(fileHeader.boundingBox[1].x);
-	fileHeader.boundingBox[1].y = FloatSwap(fileHeader.boundingBox[1].y);
-	fileHeader.boundingBox[1].z = FloatSwap(fileHeader.boundingBox[1].z);
+	//fileHeader.boundingBox[0].x = FloatSwap(fileHeader.boundingBox[0].x);
+	//fileHeader.boundingBox[0].y = FloatSwap(fileHeader.boundingBox[0].y);
+	//fileHeader.boundingBox[0].z = FloatSwap(fileHeader.boundingBox[0].z);
+	//fileHeader.boundingBox[1].x = FloatSwap(fileHeader.boundingBox[1].x);
+	//fileHeader.boundingBox[1].y = FloatSwap(fileHeader.boundingBox[1].y);
+	//fileHeader.boundingBox[1].z = FloatSwap(fileHeader.boundingBox[1].z);
 
-	std::cout << "Min Bounding Box: " << "x: " << fileHeader.boundingBox[0].x << '\t' << "y: " << fileHeader.boundingBox[0].y << '\t' << "z: " << fileHeader.boundingBox[0].z << std::endl;
-	std::cout << "Max Bounding Box: " << "x: " << fileHeader.boundingBox[1].x << '\t' << "y: " << fileHeader.boundingBox[1].y << '\t' << "z: " << fileHeader.boundingBox[1].z << std::endl;
+	//std::cout << "Min Bounding Box: " << "x: " << fileHeader.boundingBox[0].x << '\t' << "y: " << fileHeader.boundingBox[0].y << '\t' << "z: " << fileHeader.boundingBox[0].z << std::endl;
+	//std::cout << "Max Bounding Box: " << "x: " << fileHeader.boundingBox[1].x << '\t' << "y: " << fileHeader.boundingBox[1].y << '\t' << "z: " << fileHeader.boundingBox[1].z << std::endl;
 
 	std::cout << "Done!" << std::endl;
 	inputFile.close();
